@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import math
 import re
 import shutil
@@ -124,11 +125,80 @@ def extract_template_slots(pptx_path: Path) -> list[dict]:
 
 
 def resolve_slots(pptx_path: Path, per_page: int | None) -> list[dict]:
-    if per_page is not None:
-        if per_page < 1:
-            raise ValueError("--per-page 至少为 1")
-        return build_computed_slots(per_page)
-    return extract_template_slots(pptx_path)
+    if per_page is None:
+        return extract_template_slots(pptx_path)
+    if per_page < 1:
+        raise ValueError("--per-page 至少为 1")
+    try:
+        template_slots = extract_template_slots(pptx_path)
+        if len(template_slots) == per_page:
+            return template_slots
+    except ValueError:
+        pass
+    return build_computed_slots(per_page)
+
+
+def _paragraph_plain_math_text(run: ET.Element) -> str:
+    text = "".join(t.text or "" for t in run.findall(f".//{{{W_NS}}}t"))
+    text = re.sub(r"^\(\d+\)", "", text)
+    text = text.strip()
+    if text in {"", "；", "．", ".", ";", "，", ","}:
+        return ""
+    return text
+
+
+SUB_QUESTION_RE = re.compile(r"^\(\d+\)")
+MAIN_QUESTION_RE = re.compile(r"^\d+[．.]")
+
+
+def merge_paragraph_omml(paragraph: ET.Element, text: str) -> ET.Element | None:
+    """合并段落内 oMath；小题 (1)(2) 保留 = 等文字，大题题干行只取 oMath。"""
+    has_omml = any(
+        child.tag in (f"{{{M_NS}}}oMath", f"{{{M_NS}}}oMathPara")
+        for child in paragraph
+    )
+    if not has_omml:
+        return None
+
+    include_text_runs = bool(SUB_QUESTION_RE.match(text))
+    merged = ET.Element(f"{{{M_NS}}}oMath")
+    has_content = False
+
+    for child in paragraph:
+        if child.tag == f"{{{W_NS}}}r":
+            if not include_text_runs:
+                continue
+            plain = _paragraph_plain_math_text(child)
+            if not plain:
+                continue
+            mr = ET.SubElement(merged, f"{{{M_NS}}}r")
+            mt = ET.SubElement(mr, f"{{{M_NS}}}t")
+            mt.text = plain
+            has_content = True
+        elif child.tag == f"{{{M_NS}}}oMath":
+            for sub in child:
+                merged.append(copy.deepcopy(sub))
+            has_content = True
+        elif child.tag == f"{{{M_NS}}}oMathPara":
+            for om in child.findall(f"{{{M_NS}}}oMath"):
+                for sub in om:
+                    merged.append(copy.deepcopy(sub))
+                has_content = True
+
+    return merged if has_content else None
+
+
+def _should_extract_paragraph(text: str, paragraph: ET.Element) -> bool:
+    if not any(
+        child.tag in (f"{{{M_NS}}}oMath", f"{{{M_NS}}}oMathPara")
+        for child in paragraph
+    ):
+        return False
+    if SUB_QUESTION_RE.match(text):
+        return True
+    if MAIN_QUESTION_RE.match(text):
+        return True
+    return False
 
 
 def extract_omml_equations(docx_path: Path) -> list[dict]:
@@ -148,26 +218,22 @@ def extract_omml_equations(docx_path: Path) -> list[dict]:
         if m_q:
             current_q = int(m_q.group(1))
 
-        omml_nodes: list[ET.Element] = []
-        for node in p.findall(f".//{{{M_NS}}}oMath"):
-            omml_nodes.append(node)
-        for para in p.findall(f".//{{{M_NS}}}oMathPara"):
-            inner = para.findall(f".//{{{M_NS}}}oMath")
-            omml_nodes.extend(inner if inner else [para])
+        merged = merge_paragraph_omml(p, text)
+        if merged is None or not _should_extract_paragraph(text, p):
+            continue
 
-        for node in omml_nodes:
-            eq_idx += 1
-            sub_m = re.match(r"^\((\d+)\)", text)
-            equations.append(
-                {
-                    "id": eq_idx,
-                    "question": current_q,
-                    "sub": int(sub_m.group(1)) if sub_m else None,
-                    "type": "omml",
-                    "text": text[:40],
-                    "omml": ET.tostring(node, encoding="unicode"),
-                }
-            )
+        eq_idx += 1
+        sub_m = re.match(r"^\((\d+)\)", text)
+        equations.append(
+            {
+                "id": eq_idx,
+                "question": current_q,
+                "sub": int(sub_m.group(1)) if sub_m else None,
+                "type": "omml",
+                "text": text[:40],
+                "omml": ET.tostring(merged, encoding="unicode"),
+            }
+        )
 
     return equations
 
