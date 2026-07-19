@@ -44,6 +44,68 @@ EQ_GAP_X = 80000
 DEFAULT_EQ_WIDTH = 3200000
 DEFAULT_EQ_HEIGHT = 2100000
 
+# 通用 OMML 格式（Office 可编辑公式标准：Cambria Math + 固定字号 + plain 样式）
+MATH_FONT_NAME = "Cambria Math"
+MATH_FONT_PT = 14  # 磅，可通过 --math-pt 调整
+
+
+def _math_font_sz_half_points(pt: int | None = None) -> str:
+    # Word w:sz 单位是半磅，14pt → 28
+    return str(int((pt or MATH_FONT_PT) * 2))
+
+
+def _standard_w_rpr(pt: int | None = None) -> ET.Element:
+    rpr = ET.Element(f"{{{W_NS}}}rPr")
+    fonts = ET.SubElement(rpr, f"{{{W_NS}}}rFonts")
+    fonts.set(f"{{{W_NS}}}ascii", MATH_FONT_NAME)
+    fonts.set(f"{{{W_NS}}}hAnsi", MATH_FONT_NAME)
+    fonts.set(f"{{{W_NS}}}cs", MATH_FONT_NAME)
+    fonts.set(f"{{{W_NS}}}eastAsia", MATH_FONT_NAME)
+    sz = ET.SubElement(rpr, f"{{{W_NS}}}sz")
+    sz.set(f"{{{W_NS}}}val", _math_font_sz_half_points(pt))
+    sz_cs = ET.SubElement(rpr, f"{{{W_NS}}}szCs")
+    sz_cs.set(f"{{{W_NS}}}val", _math_font_sz_half_points(pt))
+    return rpr
+
+
+def _standard_m_rpr() -> ET.Element:
+    rpr = ET.Element(f"{{{M_NS}}}rPr")
+    sty = ET.SubElement(rpr, f"{{{M_NS}}}sty")
+    sty.set(f"{{{M_NS}}}val", "p")
+    return rpr
+
+
+def _set_w_rpr(parent: ET.Element, pt: int | None = None) -> None:
+    for old in parent.findall(f"{{{W_NS}}}rPr"):
+        parent.remove(old)
+    parent.append(_standard_w_rpr(pt))
+
+
+def normalize_omml(omath: ET.Element, pt: int | None = None) -> ET.Element:
+    """统一 OMML 格式：所有公式走同一套 Cambria Math + 字号 + plain 分式。"""
+    root = copy.deepcopy(omath)
+
+    for mr in root.findall(f".//{{{M_NS}}}r"):
+        for old in mr.findall(f"{{{M_NS}}}rPr"):
+            mr.remove(old)
+        mr.insert(0, _standard_m_rpr())
+        _set_w_rpr(mr, pt)
+
+    for ctrl in root.findall(f".//{{{M_NS}}}ctrlPr"):
+        _set_w_rpr(ctrl, pt)
+
+    for fpr in root.findall(f".//{{{M_NS}}}fPr"):
+        typ = fpr.find(f"{{{M_NS}}}type")
+        if typ is None:
+            typ = ET.SubElement(fpr, f"{{{M_NS}}}type")
+        typ.set(f"{{{M_NS}}}val", "bar")
+        ctrl = fpr.find(f"{{{M_NS}}}ctrlPr")
+        if ctrl is None:
+            ctrl = ET.SubElement(fpr, f"{{{M_NS}}}ctrlPr")
+        _set_w_rpr(ctrl, pt)
+
+    return root
+
 # A4 竖版（与内置模板一致）
 SLIDE_W = 6858000
 SLIDE_H = 9903460
@@ -294,9 +356,9 @@ def _omml_inner(omml_xml: str) -> ET.Element:
     return root
 
 
-def _wrap_left_omml_para(omml_xml: str) -> ET.Element:
-    """OMML 默认 centerGroup，必须用 oMathPara + jc=left 才能左对齐。"""
-    omath = _omml_inner(omml_xml)
+def _format_for_ppt(omml_xml: str, pt: int | None = None) -> ET.Element:
+    """统一格式后写入 PPT：inline oMath + 左对齐 oMathPara 外壳。"""
+    omath = normalize_omml(_omml_inner(omml_xml), pt)
     para = ET.Element(f"{{{M_NS}}}oMathPara")
     para_pr = ET.SubElement(para, f"{{{M_NS}}}oMathParaPr")
     jc = ET.SubElement(para_pr, f"{{{M_NS}}}jc")
@@ -305,7 +367,7 @@ def _wrap_left_omml_para(omml_xml: str) -> ET.Element:
     return para
 
 
-def _make_omml_shape(shape_id: int, name: str, box: dict, omml_xml: str) -> ET.Element:
+def _make_omml_shape(shape_id: int, name: str, box: dict, omml_xml: str, math_pt: int | None = None) -> ET.Element:
     sp = ET.Element(f"{{{P_NS}}}sp")
     nv = ET.SubElement(sp, f"{{{P_NS}}}nvSpPr")
     cnv = ET.SubElement(nv, f"{{{P_NS}}}cNvPr")
@@ -344,7 +406,7 @@ def _make_omml_shape(shape_id: int, name: str, box: dict, omml_xml: str) -> ET.E
     pPr.set("marL", "0")
     pPr.set("indent", "0")
     wrapper = ET.SubElement(ap, f"{{{A14_NS}}}m")
-    wrapper.append(_wrap_left_omml_para(omml_xml))
+    wrapper.append(_format_for_ppt(omml_xml, math_pt))
     return sp
 
 
@@ -411,7 +473,13 @@ def _update_app_slide_count(tmp: Path, slide_count: int) -> None:
     app_path.write_bytes(ET.tostring(root, encoding="utf-8", xml_declaration=True))
 
 
-def inject_pptx(pptx_in: Path, pptx_out: Path, equations: list[dict], layout: dict[int, dict]) -> None:
+def inject_pptx(
+    pptx_in: Path,
+    pptx_out: Path,
+    equations: list[dict],
+    layout: dict[int, dict],
+    math_pt: int | None = None,
+) -> None:
     slide_count = max(layout[i]["slide"] for i in layout) + 1
     tmp = Path(tempfile.mkdtemp())
     try:
@@ -435,7 +503,7 @@ def inject_pptx(pptx_in: Path, pptx_out: Path, equations: list[dict], layout: di
                 if not eq or eq["type"] != "omml":
                     continue
                 sid = _next_shape_id(root)
-                sp = _make_omml_shape(sid, box["shape_name"], box, eq["omml"])
+                sp = _make_omml_shape(sid, box["shape_name"], box, eq["omml"], math_pt)
                 sp_tree.append(sp)
             sf.write_bytes(ET.tostring(root, encoding="utf-8", xml_declaration=True))
 
@@ -464,6 +532,12 @@ def main() -> None:
         default=None,
         help="可选自定义样式模板；默认用内置 assets/default-template.pptx",
     )
+    ap.add_argument(
+        "--math-pt",
+        type=int,
+        default=MATH_FONT_PT,
+        help=f"统一公式字号（磅），默认 {MATH_FONT_PT}",
+    )
     args = ap.parse_args()
 
     pptx = args.pptx or DEFAULT_TEMPLATE
@@ -479,9 +553,10 @@ def main() -> None:
     slides_needed = max(box["slide"] for box in layout.values()) + 1
     per_slide = len(slots)
 
-    inject_pptx(pptx, args.out, equations, layout)
+    inject_pptx(pptx, args.out, equations, layout, args.math_pt)
 
     print(f"✓ 提取 OMML 公式: {len(equations)} 个")
+    print(f"✓ 统一格式: Cambria Math {args.math_pt}pt")
     print(f"✓ 每页题数: {per_slide}")
     print(f"✓ 生成幻灯片: {slides_needed} 页")
     print(f"✓ 输出: {args.out}")

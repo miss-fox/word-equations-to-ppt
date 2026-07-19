@@ -32,7 +32,20 @@ python3 word_to_ppt.py --docx 训练.docx --out 输出.pptx --per-page 6
 python3 word_to_ppt.py --docx 训练.docx --out 输出.pptx --per-page 4 --pptx my-template.pptx
 ```
 
-## 要求
+## 统一公式格式
+
+Office 可编辑公式的通用格式是 **OMML**，脚本注入前会统一套用：
+
+| 属性 | 默认值 | 说明 |
+|------|--------|------|
+| 字体 | Cambria Math | Office 公式标准字体 |
+| 字号 | 14pt | `--math-pt 14` 可调 |
+| 样式 | plain (`m:sty=p`) | 禁止 script/挤压样式 |
+| 分式 | bar 型 | 统一分式线 |
+
+```bash
+python3 word_to_ppt.py --docx in.docx --out out.pptx --per-page 6 --math-pt 14
+```
 
 - Python 3.10+
 - Word 源文件公式必须是**公式编辑器对象**（OMML），不能是图片
