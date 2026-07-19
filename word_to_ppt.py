@@ -275,6 +275,17 @@ def _omml_inner(omml_xml: str) -> ET.Element:
     return root
 
 
+def _wrap_left_omml_para(omml_xml: str) -> ET.Element:
+    """OMML 默认 centerGroup，必须用 oMathPara + jc=left 才能左对齐。"""
+    omath = _omml_inner(omml_xml)
+    para = ET.Element(f"{{{M_NS}}}oMathPara")
+    para_pr = ET.SubElement(para, f"{{{M_NS}}}oMathParaPr")
+    jc = ET.SubElement(para_pr, f"{{{M_NS}}}jc")
+    jc.set(f"{{{M_NS}}}val", "left")
+    para.append(omath)
+    return para
+
+
 def _make_omml_shape(shape_id: int, name: str, box: dict, omml_xml: str) -> ET.Element:
     sp = ET.Element(f"{{{P_NS}}}sp")
     nv = ET.SubElement(sp, f"{{{P_NS}}}nvSpPr")
@@ -309,8 +320,10 @@ def _make_omml_shape(shape_id: int, name: str, box: dict, omml_xml: str) -> ET.E
     ap = ET.SubElement(tx, f"{{{A_NS}}}p")
     pPr = ET.SubElement(ap, f"{{{A_NS}}}pPr")
     pPr.set("algn", "l")
+    pPr.set("marL", "0")
+    pPr.set("indent", "0")
     wrapper = ET.SubElement(ap, f"{{{A14_NS}}}m")
-    wrapper.append(_omml_inner(omml_xml))
+    wrapper.append(_wrap_left_omml_para(omml_xml))
     return sp
 
 
