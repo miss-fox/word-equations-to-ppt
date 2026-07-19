@@ -41,8 +41,8 @@ ET.register_namespace("w", W_NS)
 DEFAULT_TEMPLATE = Path(__file__).resolve().parent / "assets/default-template.pptx"
 LABEL_RE = re.compile(r"^[（(](\d+)[)）]$")
 EQ_GAP_X = 80000
-DEFAULT_EQ_WIDTH = 2500000
-DEFAULT_EQ_HEIGHT = 700000
+DEFAULT_EQ_WIDTH = 3200000
+DEFAULT_EQ_HEIGHT = 2100000
 
 # A4 竖版（与内置模板一致）
 SLIDE_W = 6858000
@@ -138,6 +138,26 @@ def resolve_slots(pptx_path: Path, per_page: int | None) -> list[dict]:
     return build_computed_slots(per_page)
 
 
+def _sample_math_run_props(paragraph: ET.Element) -> tuple[ET.Element | None, ET.Element | None]:
+    """从段落首个 oMath 取字体属性，供合并时的 plain text 复用。"""
+    for om in paragraph.findall(f".//{{{M_NS}}}oMath"):
+        for mr in om.findall(f".//{{{M_NS}}}r"):
+            return mr.find(f"{{{M_NS}}}rPr"), mr.find(f".//{{{W_NS}}}rPr")
+    return None, None
+
+
+def _append_math_text_run(merged: ET.Element, text: str, m_r_pr: ET.Element | None, w_r_pr: ET.Element | None) -> None:
+    mr = ET.SubElement(merged, f"{{{M_NS}}}r")
+    if m_r_pr is not None:
+        mr.append(copy.deepcopy(m_r_pr))
+    if w_r_pr is not None:
+        wr = ET.SubElement(mr, f"{{{W_NS}}}rPr")
+        for child in w_r_pr:
+            wr.append(copy.deepcopy(child))
+    mt = ET.SubElement(mr, f"{{{M_NS}}}t")
+    mt.text = text
+
+
 def _paragraph_plain_math_text(run: ET.Element) -> str:
     text = "".join(t.text or "" for t in run.findall(f".//{{{W_NS}}}t"))
     text = re.sub(r"^\(\d+\)", "", text)
@@ -163,6 +183,7 @@ def merge_paragraph_omml(paragraph: ET.Element, text: str) -> ET.Element | None:
     include_text_runs = bool(SUB_QUESTION_RE.match(text))
     merged = ET.Element(f"{{{M_NS}}}oMath")
     has_content = False
+    sample_m_r_pr, sample_w_r_pr = _sample_math_run_props(paragraph)
 
     for child in paragraph:
         if child.tag == f"{{{W_NS}}}r":
@@ -171,9 +192,7 @@ def merge_paragraph_omml(paragraph: ET.Element, text: str) -> ET.Element | None:
             plain = _paragraph_plain_math_text(child)
             if not plain:
                 continue
-            mr = ET.SubElement(merged, f"{{{M_NS}}}r")
-            mt = ET.SubElement(mr, f"{{{M_NS}}}t")
-            mt.text = plain
+            _append_math_text_run(merged, plain, sample_m_r_pr, sample_w_r_pr)
             has_content = True
         elif child.tag == f"{{{M_NS}}}oMath":
             for sub in child:
@@ -316,6 +335,8 @@ def _make_omml_shape(shape_id: int, name: str, box: dict, omml_xml: str) -> ET.E
     bodyPr.set("tIns", "0")
     bodyPr.set("rIns", "0")
     bodyPr.set("bIns", "0")
+    bodyPr.set("rtlCol", "0")
+    ET.SubElement(bodyPr, f"{{{A_NS}}}noAutofit")
     ET.SubElement(tx, f"{{{A_NS}}}lstStyle")
     ap = ET.SubElement(tx, f"{{{A_NS}}}p")
     pPr = ET.SubElement(ap, f"{{{A_NS}}}pPr")
