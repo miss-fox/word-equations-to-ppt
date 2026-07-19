@@ -10,12 +10,20 @@
 | `--out` | ✅ | 输出 pptx 路径 |
 | `--per-page` | 推荐 | 每页几道题，如 `2`、`6` |
 | `--pptx` | 可选 | 自定义样式模板；不传则用内置默认模板 |
+| `--target` | 可选 | `both`（默认）/ `office` / `wps` |
 
 **最简用法（只需 1 个 Word 文件 + 输出路径）：**
 
 ```bash
 python3 word_to_ppt.py --docx input.docx --out output.pptx --per-page 2
 ```
+
+默认 `--target both`，同时生成两份：
+
+| 文件 | 给谁 |
+|------|------|
+| `output.pptx` | Microsoft PowerPoint |
+| `output-wps.pptx` | **WPS 演示** |
 
 页数自动计算：`ceil(Word 公式数 / 每页题数)`
 

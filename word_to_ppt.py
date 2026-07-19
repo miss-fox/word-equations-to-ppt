@@ -356,9 +356,11 @@ def _omml_inner(omml_xml: str) -> ET.Element:
     return root
 
 
-def _format_for_ppt(omml_xml: str, pt: int | None = None) -> ET.Element:
-    """统一格式后写入 PPT：inline oMath + 左对齐 oMathPara 外壳。"""
+def _format_for_ppt(omml_xml: str, pt: int | None = None, target: str = "office") -> ET.Element:
+    """office: a14:m 内 oMathPara+jc=left；wps: a14:m 内 inline oMath（WPS 兼容更好）。"""
     omath = normalize_omml(_omml_inner(omml_xml), pt)
+    if target == "wps":
+        return omath
     para = ET.Element(f"{{{M_NS}}}oMathPara")
     para_pr = ET.SubElement(para, f"{{{M_NS}}}oMathParaPr")
     jc = ET.SubElement(para_pr, f"{{{M_NS}}}jc")
@@ -367,7 +369,14 @@ def _format_for_ppt(omml_xml: str, pt: int | None = None) -> ET.Element:
     return para
 
 
-def _make_omml_shape(shape_id: int, name: str, box: dict, omml_xml: str, math_pt: int | None = None) -> ET.Element:
+def _make_omml_shape(
+    shape_id: int,
+    name: str,
+    box: dict,
+    omml_xml: str,
+    math_pt: int | None = None,
+    target: str = "office",
+) -> ET.Element:
     sp = ET.Element(f"{{{P_NS}}}sp")
     nv = ET.SubElement(sp, f"{{{P_NS}}}nvSpPr")
     cnv = ET.SubElement(nv, f"{{{P_NS}}}cNvPr")
@@ -406,7 +415,7 @@ def _make_omml_shape(shape_id: int, name: str, box: dict, omml_xml: str, math_pt
     pPr.set("marL", "0")
     pPr.set("indent", "0")
     wrapper = ET.SubElement(ap, f"{{{A14_NS}}}m")
-    wrapper.append(_format_for_ppt(omml_xml, math_pt))
+    wrapper.append(_format_for_ppt(omml_xml, math_pt, target))
     return sp
 
 
@@ -479,6 +488,7 @@ def inject_pptx(
     equations: list[dict],
     layout: dict[int, dict],
     math_pt: int | None = None,
+    target: str = "office",
 ) -> None:
     slide_count = max(layout[i]["slide"] for i in layout) + 1
     tmp = Path(tempfile.mkdtemp())
@@ -503,7 +513,7 @@ def inject_pptx(
                 if not eq or eq["type"] != "omml":
                     continue
                 sid = _next_shape_id(root)
-                sp = _make_omml_shape(sid, box["shape_name"], box, eq["omml"], math_pt)
+                sp = _make_omml_shape(sid, box["shape_name"], box, eq["omml"], math_pt, target)
                 sp_tree.append(sp)
             sf.write_bytes(ET.tostring(root, encoding="utf-8", xml_declaration=True))
 
@@ -538,6 +548,12 @@ def main() -> None:
         default=MATH_FONT_PT,
         help=f"统一公式字号（磅），默认 {MATH_FONT_PT}",
     )
+    ap.add_argument(
+        "--target",
+        choices=("office", "wps", "both"),
+        default="both",
+        help="office=Microsoft PowerPoint；wps=WPS 演示；both=同时输出两份（默认）",
+    )
     args = ap.parse_args()
 
     pptx = args.pptx or DEFAULT_TEMPLATE
@@ -553,13 +569,26 @@ def main() -> None:
     slides_needed = max(box["slide"] for box in layout.values()) + 1
     per_slide = len(slots)
 
-    inject_pptx(pptx, args.out, equations, layout, args.math_pt)
+    outputs: list[tuple[str, Path]] = []
+    if args.target in ("office", "both"):
+        outputs.append(("office", args.out))
+    if args.target == "wps":
+        outputs.append(("wps", args.out))
+    elif args.target == "both":
+        outputs.append(("wps", args.out.with_name(f"{args.out.stem}-wps{args.out.suffix}")))
+
+    for target, out_path in outputs:
+        inject_pptx(pptx, out_path, equations, layout, args.math_pt, target)
 
     print(f"✓ 提取 OMML 公式: {len(equations)} 个")
     print(f"✓ 统一格式: Cambria Math {args.math_pt}pt")
     print(f"✓ 每页题数: {per_slide}")
     print(f"✓ 生成幻灯片: {slides_needed} 页")
-    print(f"✓ 输出: {args.out}")
+    for target, out_path in outputs:
+        label = "Microsoft PowerPoint" if target == "office" else "WPS 演示"
+        print(f"✓ [{label}] {out_path}")
+    if args.target == "both":
+        print("  WPS 用户请打开 *-wps.pptx；Office 用户请打开主文件")
 
 
 if __name__ == "__main__":
